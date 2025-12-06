@@ -5,6 +5,7 @@
  * 1. 同时尝试连接本地 Docker 和远程 Docker
  * 2. 合并所有源的结果返回给用户
  * 3. 如果都连接失败，返回详细的配置指引
+ * 4. 支持会话级动态配置（无需修改配置文件）
  */
 import Docker from 'dockerode';
 import type { ContainerInfo, ContainerDetail, ContainerStats, ImageInfo, ImageDetail } from './docker-client.js';
@@ -36,7 +37,20 @@ export declare class MultiDockerClient {
     private remoteHost;
     private initialized;
     private initPromise;
+    private lastConfigHash;
     constructor();
+    /**
+     * 生成配置哈希用于检测变更
+     */
+    private getConfigHash;
+    /**
+     * 处理配置变更
+     */
+    private handleConfigChange;
+    /**
+     * 重新初始化所有 Docker 源
+     */
+    private reinitialize;
     /**
      * 确保初始化完成
      */

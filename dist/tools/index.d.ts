@@ -11,4 +11,6 @@ export declare const MULTI_TOOL_HANDLERS: Record<string, MultiToolHandler>;
 export * from './containers.js';
 export * from './images.js';
 export * from './multi-source-tools.js';
+export * from './config-generator.js';
+export * from './session-config-tools.js';
 //# sourceMappingURL=index.d.ts.map

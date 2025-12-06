@@ -11,6 +11,12 @@ export class SecurityGuard {
         'docker_stats',
         'docker_list_images',
         'docker_image_info',
+        'docker_connection_status',
+        'docker_generate_config',
+        // 会话配置工具
+        'docker_set_connection',
+        'docker_get_session_config',
+        'docker_reset_config',
     ]);
     // 禁止的参数模式（正则表达式）
     blockedPatterns = [

@@ -271,17 +271,20 @@ export async function multiDockerConnectionStatus(
       message: '❌ 未配置任何 Docker 源',
       setup_guide: `
 ═══════════════════════════════════════════════════════════════
-🔧 请在 .env 文件中配置 Docker 源：
+🔧 配置 Docker 连接（推荐使用会话配置）：
 
-【本地 Docker】
-  ALLOW_LOCAL_DOCKER=true
+【方式1】会话配置（推荐，无需修改文件）
+  直接对话: "连接 tcp://您的服务器IP:2375"
 
-【远程 Docker（阿里云等）】
+【方式2】远程 Docker（云服务器）
   DOCKER_HOST=tcp://您的服务器IP:2375
 
-【双源模式（同时使用）】
+【方式3】本地 Docker（开发环境）
   ALLOW_LOCAL_DOCKER=true
+
+【方式4】双源模式
   DOCKER_HOST=tcp://您的服务器IP:2375
+  ALLOW_LOCAL_DOCKER=true
 ═══════════════════════════════════════════════════════════════
       `.trim(),
     };

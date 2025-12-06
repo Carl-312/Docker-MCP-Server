@@ -31,6 +31,7 @@ import { SecureDockerClient, SecurityError, MultiDockerClient } from './utils/in
 import { SecurityGuard } from './security/guard.js';
 import { AuditLogger } from './security/audit.js';
 import { MULTI_TOOLS, MULTI_TOOL_HANDLERS } from './tools/index.js';
+import { registerPromptHandlers, PROMPTS } from './prompts/index.js';
 
 // 解析命令行参数
 function parseArgs() {
@@ -107,14 +108,18 @@ console.error(`   LOG_LEVEL: ${process.env.LOG_LEVEL || 'info'}`);
 const server = new Server(
   {
     name: 'docker-mcp-server',
-    version: '1.0.0',
+    version: '1.0.3',
   },
   {
     capabilities: {
       tools: {},
+      prompts: {},  // 启用 Prompts 功能
     },
   }
 );
+
+// 注册 Prompts 处理器
+registerPromptHandlers(server);
 
 // 初始化组件
 let multiDockerClient: MultiDockerClient | null = null;
