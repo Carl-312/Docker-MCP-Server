@@ -1,7 +1,7 @@
 /**
- * 会话级配置管理器（简化版）
+ * 会话级配置管理器
  *
- * 只支持远程 Docker 连接，移除本地 Docker 支持
+ * 支持在对话中动态设置 Docker 连接，无需修改配置文件
  */
 /**
  * 会话配置管理器（单例）
@@ -35,6 +35,12 @@ export class SessionConfigManager {
      */
     getConfig() {
         return { ...this.config };
+    }
+    /**
+     * 获取 Docker Host（用于 MultiDockerClient 集成）
+     */
+    getDockerHost() {
+        return this.config.dockerHost;
     }
     /**
      * 设置 Docker 主机地址
@@ -101,7 +107,7 @@ export class SessionConfigManager {
             ? `🌐 远程 Docker: ${dockerHost}`
             : '❌ 未配置 Docker 连接';
         const source = configuredBy === 'env' ? '环境变量' :
-            configuredBy === 'session' ? '会话配置' : '未知';
+            configuredBy === 'session' ? '会话配置' : '未配置';
         const time = configuredAt ? configuredAt.toLocaleString() : '未配置';
         return `${status}\n配置来源: ${source}\n配置时间: ${time}`;
     }

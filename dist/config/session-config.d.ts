@@ -1,15 +1,15 @@
 /**
- * 会话级配置管理器（简化版）
+ * 会话级配置管理器
  *
- * 只支持远程 Docker 连接，移除本地 Docker 支持
+ * 支持在对话中动态设置 Docker 连接，无需修改配置文件
  */
-export interface DockerSessionConfig {
+export interface SessionConfig {
     dockerHost: string | null;
     securityMode: 'readonly' | 'readwrite';
     auditLog: boolean;
-    logLevel: 'debug' | 'info' | 'warn' | 'error';
+    logLevel: string;
     configuredAt: Date | null;
-    configuredBy: string | null;
+    configuredBy: 'env' | 'session' | null;
 }
 /**
  * 会话配置管理器（单例）
@@ -26,7 +26,11 @@ export declare class SessionConfigManager {
     /**
      * 获取当前配置
      */
-    getConfig(): Readonly<DockerSessionConfig>;
+    getConfig(): SessionConfig;
+    /**
+     * 获取 Docker Host（用于 MultiDockerClient 集成）
+     */
+    getDockerHost(): string | null;
     /**
      * 设置 Docker 主机地址
      */
@@ -42,11 +46,11 @@ export declare class SessionConfigManager {
     /**
      * 添加配置变更监听器
      */
-    addListener(listener: (config: DockerSessionConfig) => void): void;
+    addListener(listener: (config: SessionConfig) => void): void;
     /**
      * 移除配置变更监听器
      */
-    removeListener(listener: (config: DockerSessionConfig) => void): void;
+    removeListener(listener: (config: SessionConfig) => void): void;
     /**
      * 通知所有监听器
      */

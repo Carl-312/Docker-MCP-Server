@@ -1,7 +1,7 @@
 /**
- * 会话配置工具（简化版）
+ * 会话配置工具
  *
- * 只支持远程 Docker 连接配置
+ * 提供在对话中动态配置 Docker 连接的能力
  */
 import { z } from 'zod';
 import { getSessionConfig } from '../config/session-config.js';
@@ -82,7 +82,7 @@ export async function handleSetConnection(_client, args) {
     try {
         const params = SetConnectionSchema.parse(args);
         const configManager = getSessionConfig();
-        // 处理 docker_host
+        // 处理清除配置
         if (params.docker_host === '' || params.docker_host === 'null') {
             configManager.setDockerHost(null);
             return {
@@ -102,7 +102,7 @@ export async function handleSetConnection(_client, args) {
             if (ipOnlyPattern.test(params.docker_host)) {
                 return {
                     success: false,
-                    error: `检测到您只提供了 IP 地址 "${params.docker_host}"。请确认 Docker TCP 端口（通常是 2375），然后使用完整格式：tcp://${params.docker_host}:2375`,
+                    error: `检测到您只提供了 IP 地址 "${params.docker_host}"。请确认 Docker TCP 端口（通常是 2375），然后使用完整格式。`,
                     suggestion: `tcp://${params.docker_host}:2375`,
                     hint: '请用户确认端口号后再设置，不要自动补全。',
                 };
@@ -110,13 +110,14 @@ export async function handleSetConnection(_client, args) {
             if (ipWithPortPattern.test(params.docker_host)) {
                 return {
                     success: false,
-                    error: `格式不完整，缺少 tcp:// 前缀。请使用完整格式：tcp://${params.docker_host}`,
+                    error: `格式不完整，缺少 tcp:// 前缀。请使用完整格式。`,
                     suggestion: `tcp://${params.docker_host}`,
                 };
             }
             return {
                 success: false,
-                error: 'docker_host 格式错误，必须是 tcp://IP:端口 格式（如 tcp://192.168.1.100:2375）',
+                error: 'docker_host 格式错误，必须是 tcp://IP:端口 格式',
+                example: 'tcp://192.168.1.100:2375',
             };
         }
         configManager.setDockerHost(params.docker_host);
@@ -168,7 +169,7 @@ export async function handleGetSessionConfig(_client, _args) {
 调用 docker_set_connection，设置 docker_host 为 "tcp://您的服务器IP:2375"
 
 ### 示例
-docker_set_connection: {"docker_host": "tcp://47.100.xxx.xxx:2375"}
+docker_set_connection: {"docker_host": "tcp://your-server-ip:2375"}
 
 ### 配置完成后
 可以使用 docker_list_containers、docker_logs 等工具查询 Docker

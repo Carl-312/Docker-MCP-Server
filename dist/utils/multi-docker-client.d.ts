@@ -1,9 +1,10 @@
 /**
  * Docker 客户端（优化版）
  *
- * 支持两种连接方式：
- * 1. 环境变量配置 DOCKER_HOST（持久化）
- * 2. 每次调用时传入 docker_host 参数（无需配置）
+ * 支持三种连接方式（优先级从高到低）：
+ * 1. 每次调用时传入 docker_host 参数（最高优先）
+ * 2. 会话配置（通过 docker_set_connection 设置）
+ * 3. 环境变量配置 DOCKER_HOST（最低优先）
  */
 export interface ContainerInfo {
     id: string;
@@ -72,6 +73,7 @@ export interface DockerResult<T> {
     data?: T;
     error?: string;
     host?: string;
+    hint?: string;
 }
 /**
  * Docker 客户端类
@@ -84,6 +86,10 @@ export declare class MultiDockerClient {
         connected: boolean;
         host: string;
     }>>;
+    /**
+     * 根据错误类型提供排查建议
+     */
+    private getConnectionErrorHint;
     /**
      * 列出容器
      */

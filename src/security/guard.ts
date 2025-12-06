@@ -5,7 +5,7 @@
 export class SecurityGuard {
   private readonly securityMode: string;
   
-  // 允许调用的工具名称（简化版：8 个工具）
+  // 允许调用的工具名称（11 个工具）
   private readonly allowedTools: Set<string> = new Set([
     // Docker 查询工具（7 个）
     'docker_list_containers',
@@ -15,6 +15,10 @@ export class SecurityGuard {
     'docker_list_images',
     'docker_image_info',
     'docker_connection_status',
+    // 会话配置工具（3 个）
+    'docker_set_connection',
+    'docker_get_session_config',
+    'docker_reset_config',
     // 配置生成工具（1 个）
     'docker_generate_config',
   ]);

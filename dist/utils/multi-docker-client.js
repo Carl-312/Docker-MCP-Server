@@ -1,11 +1,15 @@
 /**
  * Docker 客户端（优化版）
  *
- * 支持两种连接方式：
- * 1. 环境变量配置 DOCKER_HOST（持久化）
- * 2. 每次调用时传入 docker_host 参数（无需配置）
+ * 支持三种连接方式（优先级从高到低）：
+ * 1. 每次调用时传入 docker_host 参数（最高优先）
+ * 2. 会话配置（通过 docker_set_connection 设置）
+ * 3. 环境变量配置 DOCKER_HOST（最低优先）
  */
 import Docker from 'dockerode';
+import { getSessionConfig } from '../config/session-config.js';
+// 默认超时时间（毫秒）
+const DEFAULT_TIMEOUT = 10000; // 10 秒
 /**
  * 解析 Docker 主机地址
  */
@@ -17,21 +21,54 @@ function parseDockerHost(dockerHost) {
     return null;
 }
 /**
- * 创建 Docker 客户端
+ * 创建 Docker 客户端（带超时配置）
  */
 function createDockerClient(dockerHost) {
     const parsed = parseDockerHost(dockerHost);
     if (!parsed)
         return null;
-    return new Docker({ host: parsed.host, port: parsed.port });
+    return new Docker({
+        host: parsed.host,
+        port: parsed.port,
+        timeout: DEFAULT_TIMEOUT,
+    });
 }
 /**
- * 获取有效的 Docker 地址（优先使用参数，其次使用环境变量）
+ * 带超时的 Promise 包装器
+ * 防止 Docker API 调用无限等待
+ */
+async function withTimeout(promise, timeoutMs = DEFAULT_TIMEOUT, operation = 'Docker 操作') {
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+            reject(new Error(`${operation}超时（${timeoutMs / 1000}秒）- 请检查：1) Docker 服务是否运行 2) 端口是否正确 3) 防火墙是否放行`));
+        }, timeoutMs);
+    });
+    try {
+        const result = await Promise.race([promise, timeoutPromise]);
+        clearTimeout(timeoutId);
+        return result;
+    }
+    catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
+    }
+}
+/**
+ * 获取有效的 Docker 地址
+ * 优先级：参数 > 会话配置 > 环境变量
  */
 function getEffectiveDockerHost(paramHost) {
+    // 1. 最高优先：调用时传入的参数
     if (paramHost && paramHost.startsWith('tcp://')) {
         return paramHost;
     }
+    // 2. 其次：会话配置（通过 docker_set_connection 设置）
+    const sessionHost = getSessionConfig().getDockerHost();
+    if (sessionHost) {
+        return sessionHost;
+    }
+    // 3. 最低：环境变量
     return process.env.DOCKER_HOST || null;
 }
 /**
@@ -47,6 +84,7 @@ export class MultiDockerClient {
             return {
                 success: false,
                 error: '未配置 Docker 连接。请在调用时传入 docker_host 参数，或设置 DOCKER_HOST 环境变量。',
+                hint: '示例: {"docker_host": "tcp://192.168.1.100:2375"}',
             };
         }
         const client = createDockerClient(effectiveHost);
@@ -54,10 +92,11 @@ export class MultiDockerClient {
             return {
                 success: false,
                 error: `无效的 Docker 地址格式: ${effectiveHost}。正确格式: tcp://IP:端口`,
+                hint: '示例: tcp://192.168.1.100:2375',
             };
         }
         try {
-            await client.ping();
+            await withTimeout(client.ping(), DEFAULT_TIMEOUT, '连接测试');
             return {
                 success: true,
                 data: { connected: true, host: effectiveHost },
@@ -70,8 +109,24 @@ export class MultiDockerClient {
                 success: false,
                 error: `连接失败: ${err.message}`,
                 host: effectiveHost,
+                hint: this.getConnectionErrorHint(err),
             };
         }
+    }
+    /**
+     * 根据错误类型提供排查建议
+     */
+    getConnectionErrorHint(err) {
+        if (err.message.includes('超时')) {
+            return '排查建议: 1) 检查 IP 和端口是否正确 2) 检查云服务器安全组是否放行该端口 3) 检查 Docker 是否配置了 TCP 监听';
+        }
+        if (err.code === 'ECONNREFUSED') {
+            return '连接被拒绝: Docker 服务可能未启动，或未监听该端口。请检查 Docker 配置。';
+        }
+        if (err.code === 'ENOTFOUND' || err.code === 'EAI_AGAIN') {
+            return '域名/IP 解析失败: 请检查地址是否正确。';
+        }
+        return '请检查 Docker 服务状态和网络连接。';
     }
     /**
      * 列出容器
@@ -82,6 +137,7 @@ export class MultiDockerClient {
             return {
                 success: false,
                 error: '未配置 Docker 连接。请传入 docker_host 参数（如 tcp://192.168.1.100:2375）',
+                hint: '示例: {"docker_host": "tcp://192.168.1.100:2375", "only_running": true}',
             };
         }
         const client = createDockerClient(effectiveHost);
@@ -89,7 +145,7 @@ export class MultiDockerClient {
             return { success: false, error: `无效的 Docker 地址: ${effectiveHost}` };
         }
         try {
-            const containers = await client.listContainers({ all: !onlyRunning });
+            const containers = await withTimeout(client.listContainers({ all: !onlyRunning }), DEFAULT_TIMEOUT, '列出容器');
             const result = containers.map(c => ({
                 id: c.Id.substring(0, 12),
                 name: c.Names[0]?.replace(/^\//, '') || 'unknown',
@@ -111,6 +167,7 @@ export class MultiDockerClient {
                 success: false,
                 error: `查询失败: ${err.message}`,
                 host: effectiveHost,
+                hint: this.getConnectionErrorHint(err),
             };
         }
     }
@@ -128,7 +185,7 @@ export class MultiDockerClient {
         }
         try {
             const container = client.getContainer(containerId);
-            const info = await container.inspect();
+            const info = await withTimeout(container.inspect(), DEFAULT_TIMEOUT, '获取容器详情');
             const result = {
                 id: info.Id.substring(0, 12),
                 name: info.Name.replace(/^\//, ''),
@@ -158,6 +215,7 @@ export class MultiDockerClient {
                 success: false,
                 error: err.statusCode === 404 ? `容器 ${containerId} 不存在` : err.message,
                 host: effectiveHost,
+                hint: err.statusCode === 404 ? undefined : this.getConnectionErrorHint(err),
             };
         }
     }
@@ -175,12 +233,12 @@ export class MultiDockerClient {
         }
         try {
             const container = client.getContainer(containerId);
-            const logsBuffer = await container.logs({
+            const logsBuffer = await withTimeout(container.logs({
                 stdout: true,
                 stderr: true,
                 tail,
                 timestamps: true,
-            });
+            }), DEFAULT_TIMEOUT, '获取容器日志');
             const logs = logsBuffer.toString('utf-8')
                 .replace(/[\x00-\x08]/g, '')
                 .trim();
@@ -192,6 +250,7 @@ export class MultiDockerClient {
                 success: false,
                 error: err.statusCode === 404 ? `容器 ${containerId} 不存在` : err.message,
                 host: effectiveHost,
+                hint: err.statusCode === 404 ? undefined : this.getConnectionErrorHint(err),
             };
         }
     }
@@ -209,7 +268,7 @@ export class MultiDockerClient {
         }
         try {
             const container = client.getContainer(containerId);
-            const stats = await container.stats({ stream: false });
+            const stats = await withTimeout(container.stats({ stream: false }), DEFAULT_TIMEOUT, '获取容器状态');
             const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage;
             const systemDelta = stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage;
             const cpuPercent = systemDelta > 0 ? (cpuDelta / systemDelta) * 100 : 0;
@@ -234,6 +293,7 @@ export class MultiDockerClient {
                 success: false,
                 error: err.statusCode === 404 ? `容器 ${containerId} 不存在` : err.message,
                 host: effectiveHost,
+                hint: err.statusCode === 404 ? undefined : this.getConnectionErrorHint(err),
             };
         }
     }
@@ -250,7 +310,7 @@ export class MultiDockerClient {
             return { success: false, error: `无效的 Docker 地址: ${effectiveHost}` };
         }
         try {
-            const images = await client.listImages();
+            const images = await withTimeout(client.listImages(), DEFAULT_TIMEOUT, '列出镜像');
             const result = images.map(img => ({
                 id: img.Id.replace('sha256:', '').substring(0, 12),
                 tags: img.RepoTags || ['<none>'],
@@ -265,6 +325,7 @@ export class MultiDockerClient {
                 success: false,
                 error: `查询失败: ${err.message}`,
                 host: effectiveHost,
+                hint: this.getConnectionErrorHint(err),
             };
         }
     }
@@ -282,7 +343,7 @@ export class MultiDockerClient {
         }
         try {
             const image = client.getImage(imageId);
-            const info = await image.inspect();
+            const info = await withTimeout(image.inspect(), DEFAULT_TIMEOUT, '获取镜像详情');
             const result = {
                 id: info.Id.replace('sha256:', '').substring(0, 12),
                 tags: info.RepoTags || [],
@@ -307,6 +368,7 @@ export class MultiDockerClient {
                 success: false,
                 error: err.statusCode === 404 ? `镜像 ${imageId} 不存在` : err.message,
                 host: effectiveHost,
+                hint: err.statusCode === 404 ? undefined : this.getConnectionErrorHint(err),
             };
         }
     }
