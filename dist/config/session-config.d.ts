@@ -1,12 +1,10 @@
 /**
- * 会话级配置管理器
+ * 会话级配置管理器（简化版）
  *
- * 允许用户在对话中动态设置 Docker 连接配置
- * 配置在会话期间有效，不需要修改 JSON 文件
+ * 只支持远程 Docker 连接，移除本地 Docker 支持
  */
 export interface DockerSessionConfig {
     dockerHost: string | null;
-    allowLocal: boolean;
     securityMode: 'readonly' | 'readwrite';
     auditLog: boolean;
     logLevel: 'debug' | 'info' | 'warn' | 'error';
@@ -33,14 +31,6 @@ export declare class SessionConfigManager {
      * 设置 Docker 主机地址
      */
     setDockerHost(host: string | null): void;
-    /**
-     * 设置是否允许本地 Docker
-     */
-    setAllowLocal(allow: boolean): void;
-    /**
-     * 批量设置配置
-     */
-    setMultiple(updates: Partial<Omit<DockerSessionConfig, 'configuredAt' | 'configuredBy'>>): void;
     /**
      * 重置为环境变量配置
      */

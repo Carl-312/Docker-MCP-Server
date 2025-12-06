@@ -1,629 +1,334 @@
 /**
- * 多源 Docker 客户端 - 同时搜索本地和云端 Docker
+ * Docker 客户端（优化版）
  *
- * 设计理念：
- * 1. 同时尝试连接本地 Docker 和远程 Docker
- * 2. 合并所有源的结果返回给用户
- * 3. 如果都连接失败，返回详细的配置指引
- * 4. 支持会话级动态配置（无需修改配置文件）
+ * 支持两种连接方式：
+ * 1. 环境变量配置 DOCKER_HOST（持久化）
+ * 2. 每次调用时传入 docker_host 参数（无需配置）
  */
 import Docker from 'dockerode';
-import { getSessionConfig } from '../config/session-config.js';
 /**
- * 生成配置指引信息
+ * 解析 Docker 主机地址
  */
-function getSetupGuide() {
-    return `
-═══════════════════════════════════════════════════════════════
-🔧 Docker MCP Server 配置指南
-═══════════════════════════════════════════════════════════════
-
-❌ 未检测到任何可用的 Docker 连接！
-
-请按以下步骤配置：
-
-┌─────────────────────────────────────────────────────────────┐
-│ 【选项1】配置云服务器 Docker（推荐）                            │
-├─────────────────────────────────────────────────────────────┤
-│ 1. 在服务器上开启 Docker 远程 API:                            │
-│    编辑 /etc/docker/daemon.json 添加:                        │
-│    {"hosts": ["unix:///var/run/docker.sock",                │
-│               "tcp://0.0.0.0:2375"]}                        │
-│                                                             │
-│ 2. 重启 Docker: systemctl restart docker                    │
-│                                                             │
-│ 3. 在云服务商安全组开放 2375 端口（仅限您的IP）                  │
-│                                                             │
-│ 4. 使用会话配置连接（无需修改配置文件）:                        │
-│    对话中说: "连接 tcp://您的服务器IP:2375"                    │
-└─────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────┐
-│ 【选项2】配置本地 Docker Desktop（开发环境）                    │
-├─────────────────────────────────────────────────────────────┤
-│ 1. 安装 Docker Desktop:                                     │
-│    https://www.docker.com/products/docker-desktop/          │
-│                                                             │
-│ 2. 启动 Docker Desktop 并等待其完全运行                       │
-│                                                             │
-│ 3. 在配置文件 env 中设置:                                     │
-│    ALLOW_LOCAL_DOCKER=true                                  │
-└─────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────┐
-│ 【选项3】双源模式（同时连接云端和本地）                          │
-├─────────────────────────────────────────────────────────────┤
-│ 1. 先完成选项1的云服务器配置                                   │
-│ 2. 在配置文件 env 中添加:                                     │
-│    ALLOW_LOCAL_DOCKER=true                                  │
-│                                                             │
-│ 系统将自动搜索两个源并合并结果！                               │
-└─────────────────────────────────────────────────────────────┘
-
-📖 完整文档: https://github.com/Carl-312/Docker-MCP-Server
-═══════════════════════════════════════════════════════════════
-`.trim();
+function parseDockerHost(dockerHost) {
+    const match = dockerHost.match(/tcp:\/\/([^:]+):(\d+)/);
+    if (match) {
+        return { host: match[1], port: parseInt(match[2], 10) };
+    }
+    return null;
 }
+/**
+ * 创建 Docker 客户端
+ */
+function createDockerClient(dockerHost) {
+    const parsed = parseDockerHost(dockerHost);
+    if (!parsed)
+        return null;
+    return new Docker({ host: parsed.host, port: parsed.port });
+}
+/**
+ * 获取有效的 Docker 地址（优先使用参数，其次使用环境变量）
+ */
+function getEffectiveDockerHost(paramHost) {
+    if (paramHost && paramHost.startsWith('tcp://')) {
+        return paramHost;
+    }
+    return process.env.DOCKER_HOST || null;
+}
+/**
+ * Docker 客户端类
+ */
 export class MultiDockerClient {
-    sources = [];
-    allowLocal;
-    remoteHost;
-    initialized = false;
-    initPromise = null;
-    lastConfigHash = '';
-    constructor() {
-        // 从会话配置获取（支持动态配置）
-        const config = getSessionConfig().getConfig();
-        this.allowLocal = config.allowLocal;
-        this.remoteHost = config.dockerHost || '';
-        this.lastConfigHash = this.getConfigHash(config);
-        // 监听配置变更
-        getSessionConfig().addListener((newConfig) => {
-            this.handleConfigChange(newConfig);
-        });
-        // 同步初始化远程源（不需要测试连接）
-        this.initializeRemoteSources();
-        // 异步初始化本地源（需要预先测试连接）
-        if (this.allowLocal) {
-            this.initPromise = this.initializeLocalSource();
+    /**
+     * 获取连接状态
+     */
+    async getConnectionStatus(dockerHost) {
+        const effectiveHost = getEffectiveDockerHost(dockerHost);
+        if (!effectiveHost) {
+            return {
+                success: false,
+                error: '未配置 Docker 连接。请在调用时传入 docker_host 参数，或设置 DOCKER_HOST 环境变量。',
+            };
         }
-    }
-    /**
-     * 生成配置哈希用于检测变更
-     */
-    getConfigHash(config) {
-        return `${config.dockerHost || ''}_${config.allowLocal}`;
-    }
-    /**
-     * 处理配置变更
-     */
-    handleConfigChange(newConfig) {
-        const newHash = this.getConfigHash(newConfig);
-        if (newHash !== this.lastConfigHash) {
-            console.error('🔄 检测到配置变更，重新初始化 Docker 客户端...');
-            this.lastConfigHash = newHash;
-            this.allowLocal = newConfig.allowLocal;
-            this.remoteHost = newConfig.dockerHost || '';
-            this.reinitialize();
+        const client = createDockerClient(effectiveHost);
+        if (!client) {
+            return {
+                success: false,
+                error: `无效的 Docker 地址格式: ${effectiveHost}。正确格式: tcp://IP:端口`,
+            };
         }
-    }
-    /**
-     * 重新初始化所有 Docker 源
-     */
-    reinitialize() {
-        this.sources = [];
-        this.initialized = false;
-        this.initPromise = null;
-        // 重新初始化
-        this.initializeRemoteSources();
-        if (this.allowLocal) {
-            this.initPromise = this.initializeLocalSource();
-        }
-        console.error(`📡 Docker 客户端重新初始化完成 (remote: ${this.remoteHost || 'none'}, local: ${this.allowLocal})`);
-    }
-    /**
-     * 确保初始化完成
-     */
-    async ensureInitialized() {
-        if (this.initPromise) {
-            await this.initPromise;
-            this.initPromise = null;
-        }
-        this.initialized = true;
-    }
-    /**
-     * 初始化远程 Docker 源（同步）
-     */
-    initializeRemoteSources() {
-        if (this.remoteHost) {
-            const match = this.remoteHost.match(/tcp:\/\/([^:]+):(\d+)/);
-            if (match) {
-                this.sources.push({
-                    name: '阿里云 ECS',
-                    type: 'remote',
-                    host: `${match[1]}:${match[2]}`,
-                    client: new Docker({
-                        host: match[1],
-                        port: parseInt(match[2], 10),
-                    }),
-                    status: 'disconnected',
-                });
-                console.error(`📡 已配置远程 Docker 源: ${match[1]}:${match[2]}`);
-            }
-        }
-    }
-    /**
-     * 初始化本地 Docker 源（异步，需要预先测试连接）
-     *
-     * 重要：必须预先测试连接！
-     * dockerode 在 Windows 上有一个隐藏行为：当 named pipe 连接失败时，
-     * 会静默回退到 DOCKER_HOST 环境变量，导致"本地"连接实际上连到了远程。
-     */
-    async initializeLocalSource() {
-        const isWindows = process.platform === 'win32';
-        const socketPath = isWindows
-            ? '//./pipe/docker_engine' // Windows named pipe
-            : '/var/run/docker.sock'; // Unix socket (Linux/Mac)
-        console.error(`💻 正在检测本地 Docker (${isWindows ? 'Windows' : 'Unix'} socket: ${socketPath})...`);
-        // 创建本地客户端，显式只使用 socketPath，不使用任何 host/port
-        const localClient = new Docker({
-            socketPath,
-            // 显式设置为 null，防止 dockerode 回退到 DOCKER_HOST
-            host: undefined,
-            port: undefined,
-        });
         try {
-            // 预先测试连接是否真的可用
-            await localClient.ping();
-            // 连接成功，添加到源列表
-            this.sources.push({
-                name: '本地 Docker Desktop',
-                type: 'local',
-                host: 'local',
-                client: localClient,
-                status: 'connected',
-            });
-            console.error(`✅ 本地 Docker 已连接`);
+            await client.ping();
+            return {
+                success: true,
+                data: { connected: true, host: effectiveHost },
+                host: effectiveHost,
+            };
         }
         catch (error) {
-            const errorMsg = error.message || '未知错误';
-            console.error(`⚠️ 本地 Docker 不可用: ${errorMsg}`);
-            console.error(`   提示: 请确保 Docker Desktop 已安装并正在运行`);
-            // 不添加到源列表，因为本地 Docker 实际不可用
-        }
-        // 打印最终配置的源数量
-        if (this.sources.length === 0) {
-            console.error('⚠️ 警告：未配置任何可用的 Docker 源');
-        }
-        else {
-            console.error(`✅ 共配置 ${this.sources.length} 个可用的 Docker 源`);
+            const err = error;
+            return {
+                success: false,
+                error: `连接失败: ${err.message}`,
+                host: effectiveHost,
+            };
         }
     }
     /**
-     * 测试单个源的连接
+     * 列出容器
      */
-    async testConnection(source) {
+    async listContainers(onlyRunning = false, dockerHost) {
+        const effectiveHost = getEffectiveDockerHost(dockerHost);
+        if (!effectiveHost) {
+            return {
+                success: false,
+                error: '未配置 Docker 连接。请传入 docker_host 参数（如 tcp://192.168.1.100:2375）',
+            };
+        }
+        const client = createDockerClient(effectiveHost);
+        if (!client) {
+            return { success: false, error: `无效的 Docker 地址: ${effectiveHost}` };
+        }
         try {
-            await source.client.ping();
-            source.status = 'connected';
-            return true;
+            const containers = await client.listContainers({ all: !onlyRunning });
+            const result = containers.map(c => ({
+                id: c.Id.substring(0, 12),
+                name: c.Names[0]?.replace(/^\//, '') || 'unknown',
+                image: c.Image,
+                status: c.Status,
+                state: c.State,
+                created: new Date(c.Created * 1000).toISOString(),
+                ports: c.Ports?.map(p => `${p.PrivatePort}${p.PublicPort ? `:${p.PublicPort}` : ''}`).join(', ') || '',
+            }));
+            return {
+                success: true,
+                data: result,
+                host: effectiveHost,
+            };
         }
         catch (error) {
-            source.status = 'error';
-            source.error = error.message || '连接失败';
-            return false;
+            const err = error;
+            return {
+                success: false,
+                error: `查询失败: ${err.message}`,
+                host: effectiveHost,
+            };
         }
     }
     /**
-     * 获取所有源的连接状态
+     * 获取容器详情
      */
-    async getConnectionStatus() {
-        await this.ensureInitialized();
-        const results = await Promise.all(this.sources.map(async (source) => {
-            await this.testConnection(source);
-            return {
-                name: source.name,
-                type: source.type,
-                host: source.host,
-                status: source.status,
-                error: source.error,
+    async inspectContainer(containerId, dockerHost) {
+        const effectiveHost = getEffectiveDockerHost(dockerHost);
+        if (!effectiveHost) {
+            return { success: false, error: '未配置 Docker 连接。请传入 docker_host 参数' };
+        }
+        const client = createDockerClient(effectiveHost);
+        if (!client) {
+            return { success: false, error: `无效的 Docker 地址: ${effectiveHost}` };
+        }
+        try {
+            const container = client.getContainer(containerId);
+            const info = await container.inspect();
+            const result = {
+                id: info.Id.substring(0, 12),
+                name: info.Name.replace(/^\//, ''),
+                image: info.Config.Image,
+                status: info.State.Status,
+                created: info.Created,
+                started: info.State.StartedAt,
+                finished: info.State.FinishedAt,
+                platform: info.Platform,
+                config: {
+                    hostname: info.Config.Hostname,
+                    env: info.Config.Env || [],
+                    cmd: info.Config.Cmd || [],
+                    workingDir: info.Config.WorkingDir,
+                },
+                network: {
+                    ipAddress: info.NetworkSettings.IPAddress,
+                    gateway: info.NetworkSettings.Gateway,
+                    ports: info.NetworkSettings.Ports,
+                },
             };
-        }));
-        return {
-            totalSources: this.sources.length,
-            connectedSources: results.filter(r => r.status === 'connected').length,
-            sources: results,
-        };
-    }
-    // ========== 容器操作 ==========
-    /**
-     * 从所有源列出容器
-     */
-    async listContainers(all = true) {
-        await this.ensureInitialized();
-        if (this.sources.length === 0) {
+            return { success: true, data: result, host: effectiveHost };
+        }
+        catch (error) {
+            const err = error;
             return {
-                status: 'no_docker_found',
-                sources: [],
-                message: '❌ 未配置任何 Docker 源',
-                setup_guide: getSetupGuide(),
+                success: false,
+                error: err.statusCode === 404 ? `容器 ${containerId} 不存在` : err.message,
+                host: effectiveHost,
             };
         }
-        const results = await Promise.all(this.sources.map(async (source) => {
-            try {
-                const containers = await source.client.listContainers({ all });
-                const formatted = containers.map(c => this.formatContainer(c));
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'success',
-                    data: formatted,
-                };
-            }
-            catch (error) {
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'error',
-                    error: error.message || '连接失败',
-                };
-            }
-        }));
-        const successResults = results.filter(r => r.status === 'success');
-        const allContainers = successResults.flatMap(r => (r.data || []).map(c => ({ ...c, source: r.name, sourceType: r.type })));
-        if (successResults.length === 0) {
-            return {
-                status: 'no_docker_found',
-                sources: results,
-                message: '❌ 所有 Docker 源均连接失败',
-                setup_guide: getSetupGuide(),
-            };
-        }
-        return {
-            status: successResults.length === results.length ? 'success' : 'partial',
-            sources: results,
-            combined: allContainers,
-            message: successResults.length === results.length
-                ? `✅ 已从 ${successResults.length} 个源获取容器列表`
-                : `⚠️ 部分源连接成功 (${successResults.length}/${results.length})`,
-        };
-    }
-    /**
-     * 从所有源获取容器详情（优先返回找到的第一个）
-     */
-    async getContainer(containerId) {
-        await this.ensureInitialized();
-        if (this.sources.length === 0) {
-            return {
-                status: 'no_docker_found',
-                sources: [],
-                message: '❌ 未配置任何 Docker 源',
-                setup_guide: getSetupGuide(),
-            };
-        }
-        const results = await Promise.all(this.sources.map(async (source) => {
-            try {
-                const container = source.client.getContainer(containerId);
-                const info = await container.inspect();
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'success',
-                    data: this.formatContainerDetail(info),
-                };
-            }
-            catch (error) {
-                const dockerError = error;
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'error',
-                    error: dockerError.statusCode === 404
-                        ? `容器 ${containerId} 不存在`
-                        : (dockerError.message || '连接失败'),
-                };
-            }
-        }));
-        const successResult = results.find(r => r.status === 'success');
-        if (!successResult) {
-            const allNotFound = results.every(r => r.error?.includes('不存在'));
-            return {
-                status: 'no_docker_found',
-                sources: results,
-                message: allNotFound
-                    ? `❌ 容器 ${containerId} 在所有源中都不存在`
-                    : '❌ 所有 Docker 源均连接失败',
-                setup_guide: allNotFound ? undefined : getSetupGuide(),
-            };
-        }
-        return {
-            status: 'success',
-            sources: results,
-            combined: { ...successResult.data, source: successResult.name, sourceType: successResult.type },
-            message: `✅ 在 ${successResult.name} 中找到容器`,
-        };
     }
     /**
      * 获取容器日志
      */
-    async getContainerLogs(containerId, tail = 100) {
-        await this.ensureInitialized();
-        if (this.sources.length === 0) {
+    async getContainerLogs(containerId, tail = 100, dockerHost) {
+        const effectiveHost = getEffectiveDockerHost(dockerHost);
+        if (!effectiveHost) {
+            return { success: false, error: '未配置 Docker 连接。请传入 docker_host 参数' };
+        }
+        const client = createDockerClient(effectiveHost);
+        if (!client) {
+            return { success: false, error: `无效的 Docker 地址: ${effectiveHost}` };
+        }
+        try {
+            const container = client.getContainer(containerId);
+            const logsBuffer = await container.logs({
+                stdout: true,
+                stderr: true,
+                tail,
+                timestamps: true,
+            });
+            const logs = logsBuffer.toString('utf-8')
+                .replace(/[\x00-\x08]/g, '')
+                .trim();
+            return { success: true, data: logs || '(无日志)', host: effectiveHost };
+        }
+        catch (error) {
+            const err = error;
             return {
-                status: 'no_docker_found',
-                sources: [],
-                message: '❌ 未配置任何 Docker 源',
-                setup_guide: getSetupGuide(),
+                success: false,
+                error: err.statusCode === 404 ? `容器 ${containerId} 不存在` : err.message,
+                host: effectiveHost,
             };
         }
-        const results = await Promise.all(this.sources.map(async (source) => {
-            try {
-                const container = source.client.getContainer(containerId);
-                const logs = await container.logs({
-                    stdout: true,
-                    stderr: true,
-                    tail,
-                    timestamps: true,
-                });
-                const logStr = Buffer.isBuffer(logs) ? logs.toString('utf-8') : String(logs);
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'success',
-                    data: logStr,
-                };
-            }
-            catch (error) {
-                const dockerError = error;
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'error',
-                    error: dockerError.statusCode === 404
-                        ? `容器 ${containerId} 不存在`
-                        : (dockerError.message || '连接失败'),
-                };
-            }
-        }));
-        const successResult = results.find(r => r.status === 'success');
-        if (!successResult) {
-            return {
-                status: 'no_docker_found',
-                sources: results,
-                message: '❌ 无法获取容器日志',
-                setup_guide: getSetupGuide(),
-            };
-        }
-        return {
-            status: 'success',
-            sources: results,
-            combined: successResult.data,
-            message: `✅ 从 ${successResult.name} 获取日志`,
-        };
     }
     /**
-     * 获取容器资源统计
+     * 获取容器资源使用情况
      */
-    async getContainerStats(containerId) {
-        await this.ensureInitialized();
-        if (this.sources.length === 0) {
+    async getContainerStats(containerId, dockerHost) {
+        const effectiveHost = getEffectiveDockerHost(dockerHost);
+        if (!effectiveHost) {
+            return { success: false, error: '未配置 Docker 连接。请传入 docker_host 参数' };
+        }
+        const client = createDockerClient(effectiveHost);
+        if (!client) {
+            return { success: false, error: `无效的 Docker 地址: ${effectiveHost}` };
+        }
+        try {
+            const container = client.getContainer(containerId);
+            const stats = await container.stats({ stream: false });
+            const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage;
+            const systemDelta = stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage;
+            const cpuPercent = systemDelta > 0 ? (cpuDelta / systemDelta) * 100 : 0;
+            const memUsage = stats.memory_stats.usage || 0;
+            const memLimit = stats.memory_stats.limit || 1;
+            const memPercent = (memUsage / memLimit) * 100;
+            const result = {
+                cpu_percent: cpuPercent.toFixed(2) + '%',
+                memory_usage: this.formatBytes(memUsage),
+                memory_limit: this.formatBytes(memLimit),
+                memory_percent: memPercent.toFixed(2) + '%',
+                network_rx: this.formatBytes(this.sumNetworkStats(stats.networks, 'rx_bytes')),
+                network_tx: this.formatBytes(this.sumNetworkStats(stats.networks, 'tx_bytes')),
+                block_read: this.formatBytes(this.sumBlockStats(stats.blkio_stats?.io_service_bytes_recursive, 'Read')),
+                block_write: this.formatBytes(this.sumBlockStats(stats.blkio_stats?.io_service_bytes_recursive, 'Write')),
+            };
+            return { success: true, data: result, host: effectiveHost };
+        }
+        catch (error) {
+            const err = error;
             return {
-                status: 'no_docker_found',
-                sources: [],
-                message: '❌ 未配置任何 Docker 源',
-                setup_guide: getSetupGuide(),
+                success: false,
+                error: err.statusCode === 404 ? `容器 ${containerId} 不存在` : err.message,
+                host: effectiveHost,
             };
         }
-        const results = await Promise.all(this.sources.map(async (source) => {
-            try {
-                const container = source.client.getContainer(containerId);
-                const stats = await container.stats({ stream: false });
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'success',
-                    data: this.formatStats(stats),
-                };
-            }
-            catch (error) {
-                const dockerError = error;
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'error',
-                    error: dockerError.statusCode === 404
-                        ? `容器 ${containerId} 不存在`
-                        : (dockerError.message || '连接失败'),
-                };
-            }
-        }));
-        const successResult = results.find(r => r.status === 'success');
-        if (!successResult) {
-            return {
-                status: 'no_docker_found',
-                sources: results,
-                message: '❌ 无法获取容器统计',
-                setup_guide: getSetupGuide(),
-            };
-        }
-        return {
-            status: 'success',
-            sources: results,
-            combined: successResult.data,
-            message: `✅ 从 ${successResult.name} 获取统计`,
-        };
     }
-    // ========== 镜像操作 ==========
     /**
-     * 从所有源列出镜像
+     * 列出镜像
      */
-    async listImages() {
-        await this.ensureInitialized();
-        if (this.sources.length === 0) {
+    async listImages(dockerHost) {
+        const effectiveHost = getEffectiveDockerHost(dockerHost);
+        if (!effectiveHost) {
+            return { success: false, error: '未配置 Docker 连接。请传入 docker_host 参数' };
+        }
+        const client = createDockerClient(effectiveHost);
+        if (!client) {
+            return { success: false, error: `无效的 Docker 地址: ${effectiveHost}` };
+        }
+        try {
+            const images = await client.listImages();
+            const result = images.map(img => ({
+                id: img.Id.replace('sha256:', '').substring(0, 12),
+                tags: img.RepoTags || ['<none>'],
+                size: this.formatBytes(img.Size),
+                created: new Date(img.Created * 1000).toISOString(),
+            }));
+            return { success: true, data: result, host: effectiveHost };
+        }
+        catch (error) {
+            const err = error;
             return {
-                status: 'no_docker_found',
-                sources: [],
-                message: '❌ 未配置任何 Docker 源',
-                setup_guide: getSetupGuide(),
+                success: false,
+                error: `查询失败: ${err.message}`,
+                host: effectiveHost,
             };
         }
-        const results = await Promise.all(this.sources.map(async (source) => {
-            try {
-                const images = await source.client.listImages();
-                const formatted = images.map(img => this.formatImage(img));
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'success',
-                    data: formatted,
-                };
-            }
-            catch (error) {
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'error',
-                    error: error.message || '连接失败',
-                };
-            }
-        }));
-        const successResults = results.filter(r => r.status === 'success');
-        const allImages = successResults.flatMap(r => (r.data || []).map(img => ({ ...img, source: r.name, sourceType: r.type })));
-        if (successResults.length === 0) {
-            return {
-                status: 'no_docker_found',
-                sources: results,
-                message: '❌ 所有 Docker 源均连接失败',
-                setup_guide: getSetupGuide(),
-            };
-        }
-        return {
-            status: successResults.length === results.length ? 'success' : 'partial',
-            sources: results,
-            combined: allImages,
-            message: `✅ 已从 ${successResults.length} 个源获取镜像列表`,
-        };
     }
     /**
      * 获取镜像详情
      */
-    async getImage(imageId) {
-        await this.ensureInitialized();
-        if (this.sources.length === 0) {
+    async inspectImage(imageId, dockerHost) {
+        const effectiveHost = getEffectiveDockerHost(dockerHost);
+        if (!effectiveHost) {
+            return { success: false, error: '未配置 Docker 连接。请传入 docker_host 参数' };
+        }
+        const client = createDockerClient(effectiveHost);
+        if (!client) {
+            return { success: false, error: `无效的 Docker 地址: ${effectiveHost}` };
+        }
+        try {
+            const image = client.getImage(imageId);
+            const info = await image.inspect();
+            const result = {
+                id: info.Id.replace('sha256:', '').substring(0, 12),
+                tags: info.RepoTags || [],
+                size: this.formatBytes(info.Size),
+                created: info.Created,
+                architecture: info.Architecture,
+                os: info.Os,
+                author: info.Author || 'unknown',
+                config: {
+                    env: info.Config.Env || [],
+                    cmd: info.Config.Cmd || [],
+                    entrypoint: Array.isArray(info.Config.Entrypoint) ? info.Config.Entrypoint : [],
+                    workingDir: info.Config.WorkingDir,
+                    exposedPorts: Object.keys(info.Config.ExposedPorts || {}),
+                },
+            };
+            return { success: true, data: result, host: effectiveHost };
+        }
+        catch (error) {
+            const err = error;
             return {
-                status: 'no_docker_found',
-                sources: [],
-                message: '❌ 未配置任何 Docker 源',
-                setup_guide: getSetupGuide(),
+                success: false,
+                error: err.statusCode === 404 ? `镜像 ${imageId} 不存在` : err.message,
+                host: effectiveHost,
             };
         }
-        const results = await Promise.all(this.sources.map(async (source) => {
-            try {
-                const image = source.client.getImage(imageId);
-                const info = await image.inspect();
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'success',
-                    data: this.formatImageDetail(info),
-                };
-            }
-            catch (error) {
-                const dockerError = error;
-                return {
-                    name: source.name,
-                    type: source.type,
-                    host: source.host,
-                    status: 'error',
-                    error: dockerError.statusCode === 404
-                        ? `镜像 ${imageId} 不存在`
-                        : (dockerError.message || '连接失败'),
-                };
-            }
-        }));
-        const successResult = results.find(r => r.status === 'success');
-        if (!successResult) {
-            return {
-                status: 'no_docker_found',
-                sources: results,
-                message: `❌ 镜像 ${imageId} 在所有源中都不存在`,
-            };
-        }
-        return {
-            status: 'success',
-            sources: results,
-            combined: { ...successResult.data, source: successResult.name, sourceType: successResult.type },
-            message: `✅ 在 ${successResult.name} 中找到镜像`,
-        };
     }
-    // ========== 格式化辅助方法 ==========
-    formatContainer(container) {
-        return {
-            id: container.Id.substring(0, 12),
-            name: container.Names[0]?.replace(/^\//, '') || 'unknown',
-            status: container.State,
-            image: container.Image,
-            created: new Date(container.Created * 1000).toISOString(),
-        };
+    // 工具方法
+    formatBytes(bytes) {
+        if (bytes === 0)
+            return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     }
-    formatContainerDetail(info) {
-        return {
-            id: info.Id.substring(0, 12),
-            name: info.Name.replace(/^\//, ''),
-            status: info.State.Status,
-            image: info.Config.Image,
-            created: info.Created,
-            state: info.State,
-            ports: info.NetworkSettings.Ports || {},
-            mounts: (info.Mounts || []).map(m => m.Destination),
-            envCount: (info.Config.Env || []).length,
-        };
+    sumNetworkStats(networks, key) {
+        if (!networks)
+            return 0;
+        return Object.values(networks).reduce((sum, net) => sum + (net[key] || 0), 0);
     }
-    formatStats(stats) {
-        const cpuDelta = stats.cpu_stats.cpu_usage.total_usage -
-            (stats.precpu_stats?.cpu_usage?.total_usage || 0);
-        const systemDelta = (stats.cpu_stats.system_cpu_usage || 0) -
-            (stats.precpu_stats?.system_cpu_usage || 0);
-        const cpuPercent = systemDelta > 0 ? (cpuDelta / systemDelta) * 100 : 0;
-        const memUsage = stats.memory_stats.usage || 0;
-        const memLimit = stats.memory_stats.limit || 1;
-        const memPercent = (memUsage / memLimit) * 100;
-        return {
-            cpuPercent: Math.round(cpuPercent * 100) / 100,
-            memoryUsageMb: Math.round(memUsage / 1024 / 1024 * 100) / 100,
-            memoryLimitMb: Math.round(memLimit / 1024 / 1024 * 100) / 100,
-            memoryPercent: Math.round(memPercent * 100) / 100,
-        };
-    }
-    formatImage(image) {
-        return {
-            id: image.Id.substring(7, 19),
-            tags: image.RepoTags || [],
-            sizeMb: Math.round(image.Size / 1024 / 1024 * 100) / 100,
-            created: new Date(image.Created * 1000).toISOString(),
-        };
-    }
-    formatImageDetail(info) {
-        return {
-            id: info.Id.substring(7, 19),
-            tags: info.RepoTags || [],
-            sizeMb: Math.round(info.Size / 1024 / 1024 * 100) / 100,
-            created: info.Created,
-            architecture: info.Architecture,
-            os: info.Os,
-            layersCount: info.RootFS?.Layers?.length || 0,
-        };
+    sumBlockStats(stats, op) {
+        if (!stats)
+            return 0;
+        const stat = stats.find(s => s.op === op);
+        return stat?.value || 0;
     }
 }
 //# sourceMappingURL=multi-docker-client.js.map

@@ -1,6 +1,6 @@
 {
   "name": "docker-mcp-secure",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "云巡 - 企业级安全的 Docker 容器管理 MCP 服务器，四层纵深防御，只读安全",
   "type": "module",
   "main": "dist/index.js",

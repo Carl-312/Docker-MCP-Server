@@ -1,7 +1,7 @@
 /**
- * MCP Prompts - 配置向导提示词
+ * MCP Prompts - 配置向导提示词（简化版）
  *
- * 提供交互式配置指南，帮助用户生成正确的 MCP 配置
+ * 只提供云服务器配置向导
  */
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 /**

@@ -1,7 +1,7 @@
 /**
- * 配置生成工具
+ * 配置生成工具（简化版）
  *
- * 根据用户需求生成 MCP 配置 JSON
+ * 只生成云服务器 Docker 配置
  */
 /**
  * 配置生成工具定义
@@ -12,11 +12,6 @@ export declare const CONFIG_GENERATOR_TOOL: {
     inputSchema: {
         type: "object";
         properties: {
-            mode: {
-                type: string;
-                enum: string[];
-                description: string;
-            };
             server_ip: {
                 type: string;
                 description: string;

@@ -1,7 +1,7 @@
 /**
- * 会话配置工具
+ * 会话配置工具（简化版）
  *
- * 允许用户在对话中动态设置 Docker 连接配置
+ * 只支持远程 Docker 连接配置
  */
 import { z } from 'zod';
 import { getSessionConfig } from '../config/session-config.js';
@@ -10,17 +10,13 @@ import { getSessionConfig } from '../config/session-config.js';
  */
 export const SET_CONNECTION_TOOL = {
     name: 'docker_set_connection',
-    description: '设置 Docker 连接。在对话中配置要连接的 Docker 服务器，无需修改配置文件。配置在当前会话期间有效。',
+    description: '设置 Docker 连接。在对话中配置要连接的云服务器 Docker，无需修改配置文件。配置在当前会话期间有效。',
     inputSchema: {
         type: 'object',
         properties: {
             docker_host: {
                 type: 'string',
-                description: '完整的 Docker 地址，必须是 tcp://IP:端口 格式（如 tcp://192.168.1.100:2375）。如果用户只提供了 IP，请要求用户确认端口号后再设置。设为空字符串可清除远程配置。',
-            },
-            allow_local: {
-                type: 'boolean',
-                description: '是否允许连接本地 Docker（默认 false）',
+                description: '完整的 Docker 地址，必须是 tcp://IP:端口 格式（如 tcp://192.168.1.100:2375）。如果用户只提供了 IP，请要求用户确认端口号后再设置。设为空字符串可清除配置。',
             },
             security_mode: {
                 type: 'string',
@@ -37,7 +33,7 @@ export const SET_CONNECTION_TOOL = {
                 description: '日志级别（默认 info）',
             },
         },
-        required: [],
+        required: ['docker_host'],
     },
 };
 /**
@@ -71,8 +67,7 @@ export const RESET_CONFIG_TOOL = {
 };
 // Schema 定义
 const SetConnectionSchema = z.object({
-    docker_host: z.string().optional(),
-    allow_local: z.boolean().optional(),
+    docker_host: z.string(),
     security_mode: z.enum(['readonly', 'readwrite']).optional(),
     audit_log: z.boolean().optional(),
     log_level: z.enum(['debug', 'info', 'warn', 'error']).optional(),
@@ -87,75 +82,56 @@ export async function handleSetConnection(_client, args) {
     try {
         const params = SetConnectionSchema.parse(args);
         const configManager = getSessionConfig();
-        const updates = {};
         // 处理 docker_host
-        if (params.docker_host !== undefined) {
-            if (params.docker_host === '' || params.docker_host === 'null') {
-                configManager.setDockerHost(null);
-                updates.dockerHost = null;
+        if (params.docker_host === '' || params.docker_host === 'null') {
+            configManager.setDockerHost(null);
+            return {
+                success: true,
+                message: '✅ Docker 连接已清除',
+                current_config: {
+                    docker_host: null,
+                },
+            };
+        }
+        // 严格验证格式：必须是 tcp://IP:端口
+        const tcpPattern = /^tcp:\/\/[\w.-]+:\d+$/;
+        if (!tcpPattern.test(params.docker_host)) {
+            // 检测用户是否只提供了 IP
+            const ipOnlyPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+            const ipWithPortPattern = /^(\d{1,3}\.){3}\d{1,3}:\d+$/;
+            if (ipOnlyPattern.test(params.docker_host)) {
+                return {
+                    success: false,
+                    error: `检测到您只提供了 IP 地址 "${params.docker_host}"。请确认 Docker TCP 端口（通常是 2375），然后使用完整格式：tcp://${params.docker_host}:2375`,
+                    suggestion: `tcp://${params.docker_host}:2375`,
+                    hint: '请用户确认端口号后再设置，不要自动补全。',
+                };
             }
-            else {
-                // 严格验证格式：必须是 tcp://IP:端口
-                const tcpPattern = /^tcp:\/\/[\w.-]+:\d+$/;
-                if (!tcpPattern.test(params.docker_host)) {
-                    // 检测用户是否只提供了 IP
-                    const ipOnlyPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
-                    const ipWithPortPattern = /^(\d{1,3}\.){3}\d{1,3}:\d+$/;
-                    if (ipOnlyPattern.test(params.docker_host)) {
-                        return {
-                            success: false,
-                            error: `检测到您只提供了 IP 地址 "${params.docker_host}"。请确认 Docker TCP 端口（通常是 2375），然后使用完整格式：tcp://${params.docker_host}:2375`,
-                            suggestion: `tcp://${params.docker_host}:2375`,
-                            hint: '请用户确认端口号后再设置，不要自动补全。',
-                        };
-                    }
-                    if (ipWithPortPattern.test(params.docker_host)) {
-                        return {
-                            success: false,
-                            error: `格式不完整，缺少 tcp:// 前缀。请使用完整格式：tcp://${params.docker_host}`,
-                            suggestion: `tcp://${params.docker_host}`,
-                        };
-                    }
-                    return {
-                        success: false,
-                        error: 'docker_host 格式错误，必须是 tcp://IP:端口 格式（如 tcp://192.168.1.100:2375）',
-                    };
-                }
-                configManager.setDockerHost(params.docker_host);
-                updates.dockerHost = params.docker_host;
+            if (ipWithPortPattern.test(params.docker_host)) {
+                return {
+                    success: false,
+                    error: `格式不完整，缺少 tcp:// 前缀。请使用完整格式：tcp://${params.docker_host}`,
+                    suggestion: `tcp://${params.docker_host}`,
+                };
             }
+            return {
+                success: false,
+                error: 'docker_host 格式错误，必须是 tcp://IP:端口 格式（如 tcp://192.168.1.100:2375）',
+            };
         }
-        // 处理 allow_local
-        if (params.allow_local !== undefined) {
-            configManager.setAllowLocal(params.allow_local);
-            updates.allowLocal = params.allow_local;
-        }
-        // 处理其他配置
-        if (params.security_mode !== undefined || params.audit_log !== undefined || params.log_level !== undefined) {
-            const otherUpdates = {};
-            if (params.security_mode !== undefined)
-                otherUpdates.securityMode = params.security_mode;
-            if (params.audit_log !== undefined)
-                otherUpdates.auditLog = params.audit_log;
-            if (params.log_level !== undefined)
-                otherUpdates.logLevel = params.log_level;
-            configManager.setMultiple(otherUpdates);
-            Object.assign(updates, otherUpdates);
-        }
+        configManager.setDockerHost(params.docker_host);
         const config = configManager.getConfig();
         return {
             success: true,
-            message: '✅ 会话配置已更新',
-            updates,
+            message: '✅ Docker 连接已配置',
             current_config: {
                 docker_host: config.dockerHost,
-                allow_local: config.allowLocal,
                 security_mode: config.securityMode,
                 audit_log: config.auditLog,
                 log_level: config.logLevel,
             },
             status: configManager.getStatusSummary(),
-            note: '配置在当前会话期间有效。如需持久化，请将配置添加到 MCP 配置文件的 env 字段中。',
+            note: '配置在当前会话期间有效。现在可以使用 docker_list_containers 等工具查询 Docker。',
         };
     }
     catch (error) {
@@ -175,7 +151,6 @@ export async function handleGetSessionConfig(_client, _args) {
         success: true,
         config: {
             docker_host: config.dockerHost,
-            allow_local: config.allowLocal,
             security_mode: config.securityMode,
             audit_log: config.auditLog,
             log_level: config.logLevel,
@@ -189,20 +164,14 @@ export async function handleGetSessionConfig(_client, _args) {
         usage_guide: `
 ## 📖 配置使用指南
 
-### 【推荐】连接云服务器 Docker
+### 设置 Docker 连接
 调用 docker_set_connection，设置 docker_host 为 "tcp://您的服务器IP:2375"
-示例: "连接 tcp://47.100.xxx.xxx:2375"
 
-### 启用本地 Docker（开发环境）
-调用 docker_set_connection，设置 allow_local 为 true
+### 示例
+docker_set_connection: {"docker_host": "tcp://47.100.xxx.xxx:2375"}
 
-### 双源模式（同时连接远程和本地）
-同时设置 docker_host 和 allow_local: true
-
-### 示例对话
-- "连接 tcp://47.100.xxx.xxx:2375"（推荐）
-- "启用本地 Docker"
-- "查看当前配置"
+### 配置完成后
+可以使用 docker_list_containers、docker_logs 等工具查询 Docker
     `.trim(),
     };
 }
@@ -226,7 +195,6 @@ export async function handleResetConfig(_client, args) {
             message: '✅ 配置已重置为环境变量默认值',
             current_config: {
                 docker_host: config.dockerHost,
-                allow_local: config.allowLocal,
                 security_mode: config.securityMode,
                 audit_log: config.auditLog,
                 log_level: config.logLevel,

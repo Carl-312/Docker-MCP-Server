@@ -1,118 +1,115 @@
 /**
- * 多源 Docker 客户端 - 同时搜索本地和云端 Docker
+ * Docker 客户端（优化版）
  *
- * 设计理念：
- * 1. 同时尝试连接本地 Docker 和远程 Docker
- * 2. 合并所有源的结果返回给用户
- * 3. 如果都连接失败，返回详细的配置指引
- * 4. 支持会话级动态配置（无需修改配置文件）
+ * 支持两种连接方式：
+ * 1. 环境变量配置 DOCKER_HOST（持久化）
+ * 2. 每次调用时传入 docker_host 参数（无需配置）
  */
-import Docker from 'dockerode';
-import type { ContainerInfo, ContainerDetail, ContainerStats, ImageInfo, ImageDetail } from './docker-client.js';
-export interface DockerSource {
+export interface ContainerInfo {
+    id: string;
     name: string;
-    type: 'local' | 'remote';
-    host: string;
-    client: Docker;
-    status: 'connected' | 'disconnected' | 'error';
+    image: string;
+    status: string;
+    state: string;
+    created: string;
+    ports: string;
+}
+export interface ContainerDetail {
+    id: string;
+    name: string;
+    image: string;
+    status: string;
+    created: string;
+    started: string;
+    finished: string;
+    platform: string;
+    config: {
+        hostname: string;
+        env: string[];
+        cmd: string[];
+        workingDir: string;
+    };
+    network: {
+        ipAddress: string;
+        gateway: string;
+        ports: unknown;
+    };
+}
+export interface ContainerStats {
+    cpu_percent: string;
+    memory_usage: string;
+    memory_limit: string;
+    memory_percent: string;
+    network_rx: string;
+    network_tx: string;
+    block_read: string;
+    block_write: string;
+}
+export interface ImageInfo {
+    id: string;
+    tags: string[];
+    size: string;
+    created: string;
+}
+export interface ImageDetail {
+    id: string;
+    tags: string[];
+    size: string;
+    created: string;
+    architecture: string;
+    os: string;
+    author: string;
+    config: {
+        env: string[];
+        cmd: string[];
+        entrypoint: string[];
+        workingDir: string;
+        exposedPorts: string[];
+    };
+}
+export interface DockerResult<T> {
+    success: boolean;
+    data?: T;
     error?: string;
+    host?: string;
 }
-export interface MultiSourceResult<T> {
-    status: 'success' | 'partial' | 'no_docker_found';
-    sources: {
-        name: string;
-        type: 'local' | 'remote';
-        host: string;
-        status: 'success' | 'error';
-        error?: string;
-        data?: T;
-    }[];
-    combined?: T;
-    message?: string;
-    setup_guide?: string;
-}
+/**
+ * Docker 客户端类
+ */
 export declare class MultiDockerClient {
-    private sources;
-    private allowLocal;
-    private remoteHost;
-    private initialized;
-    private initPromise;
-    private lastConfigHash;
-    constructor();
     /**
-     * 生成配置哈希用于检测变更
+     * 获取连接状态
      */
-    private getConfigHash;
+    getConnectionStatus(dockerHost?: string): Promise<DockerResult<{
+        connected: boolean;
+        host: string;
+    }>>;
     /**
-     * 处理配置变更
+     * 列出容器
      */
-    private handleConfigChange;
+    listContainers(onlyRunning?: boolean, dockerHost?: string): Promise<DockerResult<ContainerInfo[]>>;
     /**
-     * 重新初始化所有 Docker 源
+     * 获取容器详情
      */
-    private reinitialize;
-    /**
-     * 确保初始化完成
-     */
-    private ensureInitialized;
-    /**
-     * 初始化远程 Docker 源（同步）
-     */
-    private initializeRemoteSources;
-    /**
-     * 初始化本地 Docker 源（异步，需要预先测试连接）
-     *
-     * 重要：必须预先测试连接！
-     * dockerode 在 Windows 上有一个隐藏行为：当 named pipe 连接失败时，
-     * 会静默回退到 DOCKER_HOST 环境变量，导致"本地"连接实际上连到了远程。
-     */
-    private initializeLocalSource;
-    /**
-     * 测试单个源的连接
-     */
-    private testConnection;
-    /**
-     * 获取所有源的连接状态
-     */
-    getConnectionStatus(): Promise<{
-        totalSources: number;
-        connectedSources: number;
-        sources: {
-            name: string;
-            type: string;
-            host: string;
-            status: string;
-            error?: string;
-        }[];
-    }>;
-    /**
-     * 从所有源列出容器
-     */
-    listContainers(all?: boolean): Promise<MultiSourceResult<ContainerInfo[]>>;
-    /**
-     * 从所有源获取容器详情（优先返回找到的第一个）
-     */
-    getContainer(containerId: string): Promise<MultiSourceResult<ContainerDetail>>;
+    inspectContainer(containerId: string, dockerHost?: string): Promise<DockerResult<ContainerDetail>>;
     /**
      * 获取容器日志
      */
-    getContainerLogs(containerId: string, tail?: number): Promise<MultiSourceResult<string>>;
+    getContainerLogs(containerId: string, tail?: number, dockerHost?: string): Promise<DockerResult<string>>;
     /**
-     * 获取容器资源统计
+     * 获取容器资源使用情况
      */
-    getContainerStats(containerId: string): Promise<MultiSourceResult<ContainerStats>>;
+    getContainerStats(containerId: string, dockerHost?: string): Promise<DockerResult<ContainerStats>>;
     /**
-     * 从所有源列出镜像
+     * 列出镜像
      */
-    listImages(): Promise<MultiSourceResult<ImageInfo[]>>;
+    listImages(dockerHost?: string): Promise<DockerResult<ImageInfo[]>>;
     /**
      * 获取镜像详情
      */
-    getImage(imageId: string): Promise<MultiSourceResult<ImageDetail>>;
-    private formatContainer;
-    private formatContainerDetail;
-    private formatStats;
-    private formatImage;
-    private formatImageDetail;
+    inspectImage(imageId: string, dockerHost?: string): Promise<DockerResult<ImageDetail>>;
+    private formatBytes;
+    private sumNetworkStats;
+    private sumBlockStats;
 }
 //# sourceMappingURL=multi-docker-client.d.ts.map

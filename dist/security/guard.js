@@ -3,8 +3,9 @@
  */
 export class SecurityGuard {
     securityMode;
-    // 允许调用的工具名称
+    // 允许调用的工具名称（简化版：8 个工具）
     allowedTools = new Set([
+        // Docker 查询工具（7 个）
         'docker_list_containers',
         'docker_inspect',
         'docker_logs',
@@ -12,11 +13,8 @@ export class SecurityGuard {
         'docker_list_images',
         'docker_image_info',
         'docker_connection_status',
+        // 配置生成工具（1 个）
         'docker_generate_config',
-        // 会话配置工具
-        'docker_set_connection',
-        'docker_get_session_config',
-        'docker_reset_config',
     ]);
     // 禁止的参数模式（正则表达式）
     blockedPatterns = [
@@ -52,6 +50,10 @@ export class SecurityGuard {
     checkArguments(args) {
         for (const [key, value] of Object.entries(args)) {
             if (typeof value === 'string') {
+                // 跳过 docker_host 参数的特殊字符检查（tcp:// 格式）
+                if (key === 'docker_host') {
+                    continue;
+                }
                 for (const pattern of this.blockedPatterns) {
                     if (pattern.test(value)) {
                         return [false, `参数 ${key} 包含危险模式`];

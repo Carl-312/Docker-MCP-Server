@@ -1,14 +1,24 @@
 /**
- * 多源容器工具 - 同时搜索本地和云端 Docker
+ * Docker 容器和镜像工具（优化版）
+ *
+ * 每个工具都支持 docker_host 参数，无需预先配置
  */
-// ========== 工具定义 ==========
+// 通用的 docker_host 参数定义
+const dockerHostParam = {
+    type: 'string',
+    description: 'Docker 服务器地址，格式: tcp://IP:端口（如 tcp://192.168.1.100:2375）。如果已设置 DOCKER_HOST 环境变量，此参数可选。',
+};
+/**
+ * 工具定义
+ */
 export const MULTI_CONTAINER_TOOLS = [
     {
         name: 'docker_list_containers',
-        description: '列出所有 Docker 容器（同时搜索本地和云端）',
+        description: '列出云服务器上的所有 Docker 容器',
         inputSchema: {
             type: 'object',
             properties: {
+                docker_host: dockerHostParam,
                 only_running: {
                     type: 'boolean',
                     description: '是否只显示运行中的容器，默认显示全部',
@@ -19,13 +29,14 @@ export const MULTI_CONTAINER_TOOLS = [
     },
     {
         name: 'docker_inspect',
-        description: '查看指定容器的详细信息（在所有源中搜索）',
+        description: '查看指定容器的详细信息',
         inputSchema: {
             type: 'object',
             properties: {
+                docker_host: dockerHostParam,
                 container_id: {
                     type: 'string',
-                    description: '容器ID或名称',
+                    description: '容器ID或名称（必填）',
                 },
             },
             required: ['container_id'],
@@ -33,13 +44,14 @@ export const MULTI_CONTAINER_TOOLS = [
     },
     {
         name: 'docker_logs',
-        description: '获取容器的最近日志（在所有源中搜索）',
+        description: '获取容器的最近日志',
         inputSchema: {
             type: 'object',
             properties: {
+                docker_host: dockerHostParam,
                 container_id: {
                     type: 'string',
-                    description: '容器ID或名称',
+                    description: '容器ID或名称（必填）',
                 },
                 tail: {
                     type: 'integer',
@@ -51,13 +63,14 @@ export const MULTI_CONTAINER_TOOLS = [
     },
     {
         name: 'docker_stats',
-        description: '获取容器的资源使用情况（在所有源中搜索）',
+        description: '获取容器的资源使用情况（CPU、内存、网络等）',
         inputSchema: {
             type: 'object',
             properties: {
+                docker_host: dockerHostParam,
                 container_id: {
                     type: 'string',
-                    description: '容器ID或名称',
+                    description: '容器ID或名称（必填）',
                 },
             },
             required: ['container_id'],
@@ -65,22 +78,25 @@ export const MULTI_CONTAINER_TOOLS = [
     },
     {
         name: 'docker_list_images',
-        description: '列出所有 Docker 镜像（同时搜索本地和云端）',
+        description: '列出云服务器上的所有 Docker 镜像',
         inputSchema: {
             type: 'object',
-            properties: {},
+            properties: {
+                docker_host: dockerHostParam,
+            },
             required: [],
         },
     },
     {
         name: 'docker_image_info',
-        description: '查看指定镜像的详细信息（在所有源中搜索）',
+        description: '查看指定镜像的详细信息',
         inputSchema: {
             type: 'object',
             properties: {
+                docker_host: dockerHostParam,
                 image_id: {
                     type: 'string',
-                    description: '镜像ID或名称（如 nginx:latest）',
+                    description: '镜像ID或名称（如 nginx:latest）（必填）',
                 },
             },
             required: ['image_id'],
@@ -88,165 +104,156 @@ export const MULTI_CONTAINER_TOOLS = [
     },
     {
         name: 'docker_connection_status',
-        description: '查看所有 Docker 源的连接状态',
+        description: '测试 Docker 连接是否正常',
         inputSchema: {
             type: 'object',
-            properties: {},
+            properties: {
+                docker_host: dockerHostParam,
+            },
             required: [],
         },
     },
 ];
-// ========== 格式化输出 ==========
-function formatMultiSourceResponse(result) {
-    if (result.status === 'no_docker_found') {
+/**
+ * 工具处理器
+ */
+// 列出容器
+async function handleListContainers(client, args) {
+    const dockerHost = args.docker_host;
+    const onlyRunning = args.only_running || false;
+    const result = await client.listContainers(onlyRunning, dockerHost);
+    if (!result.success) {
         return {
             status: 'error',
-            message: result.message,
-            sources: result.sources,
-            setup_guide: result.setup_guide,
+            message: result.error,
+            hint: '请传入 docker_host 参数，例如: {"docker_host": "tcp://192.168.1.100:2375"}',
         };
     }
     return {
-        status: result.status,
-        message: result.message,
-        sources_summary: result.sources.map(s => ({
-            name: s.name,
-            type: s.type === 'local' ? '💻 本地' : '☁️ 云端',
-            host: s.host,
-            status: s.status === 'success' ? '✅ 成功' : '❌ 失败',
-            error: s.error,
-        })),
-        data: result.combined,
+        status: 'success',
+        host: result.host,
+        count: result.data?.length || 0,
+        containers: result.data,
     };
 }
-// ========== 工具实现 ==========
-export async function multiDockerListContainers(client, args) {
-    const onlyRunning = args.only_running === true;
-    const result = await client.listContainers(!onlyRunning);
-    const response = formatMultiSourceResponse(result);
-    if (result.status !== 'no_docker_found' && Array.isArray(result.combined)) {
-        response.total = result.combined.length;
-        response.containers = result.combined;
-        delete response.data;
-    }
-    return response;
-}
-export async function multiDockerInspect(client, args) {
+// 容器详情
+async function handleInspect(client, args) {
+    const dockerHost = args.docker_host;
     const containerId = args.container_id;
     if (!containerId) {
-        return { status: 'error', message: '请提供容器ID' };
+        return { status: 'error', message: '请提供 container_id 参数' };
     }
-    const result = await client.getContainer(containerId);
-    const response = formatMultiSourceResponse(result);
-    if (result.status === 'success') {
-        response.container = result.combined;
-        delete response.data;
+    const result = await client.inspectContainer(containerId, dockerHost);
+    if (!result.success) {
+        return { status: 'error', message: result.error, host: result.host };
     }
-    return response;
+    return {
+        status: 'success',
+        host: result.host,
+        container: result.data,
+    };
 }
-export async function multiDockerLogs(client, args) {
+// 容器日志
+async function handleLogs(client, args) {
+    const dockerHost = args.docker_host;
     const containerId = args.container_id;
     const tail = args.tail || 100;
     if (!containerId) {
-        return { status: 'error', message: '请提供容器ID' };
+        return { status: 'error', message: '请提供 container_id 参数' };
     }
-    const result = await client.getContainerLogs(containerId, tail);
-    const response = formatMultiSourceResponse(result);
-    if (result.status === 'success') {
-        response.container_id = containerId;
-        response.lines = tail;
-        response.logs = result.combined;
-        delete response.data;
+    const result = await client.getContainerLogs(containerId, tail, dockerHost);
+    if (!result.success) {
+        return { status: 'error', message: result.error, host: result.host };
     }
-    return response;
+    return {
+        status: 'success',
+        host: result.host,
+        container_id: containerId,
+        tail: tail,
+        logs: result.data,
+    };
 }
-export async function multiDockerStats(client, args) {
+// 容器资源统计
+async function handleStats(client, args) {
+    const dockerHost = args.docker_host;
     const containerId = args.container_id;
     if (!containerId) {
-        return { status: 'error', message: '请提供容器ID' };
+        return { status: 'error', message: '请提供 container_id 参数' };
     }
-    const result = await client.getContainerStats(containerId);
-    const response = formatMultiSourceResponse(result);
-    if (result.status === 'success') {
-        response.container_id = containerId;
-        response.stats = result.combined;
-        delete response.data;
+    const result = await client.getContainerStats(containerId, dockerHost);
+    if (!result.success) {
+        return { status: 'error', message: result.error, host: result.host };
     }
-    return response;
+    return {
+        status: 'success',
+        host: result.host,
+        container_id: containerId,
+        stats: result.data,
+    };
 }
-export async function multiDockerListImages(client, _args) {
-    const result = await client.listImages();
-    const response = formatMultiSourceResponse(result);
-    if (result.status !== 'no_docker_found' && Array.isArray(result.combined)) {
-        response.total = result.combined.length;
-        response.images = result.combined;
-        delete response.data;
-    }
-    return response;
-}
-export async function multiDockerImageInfo(client, args) {
-    const imageId = args.image_id;
-    if (!imageId) {
-        return { status: 'error', message: '请提供镜像ID' };
-    }
-    const result = await client.getImage(imageId);
-    const response = formatMultiSourceResponse(result);
-    if (result.status === 'success') {
-        response.image = result.combined;
-        delete response.data;
-    }
-    return response;
-}
-export async function multiDockerConnectionStatus(client, _args) {
-    const status = await client.getConnectionStatus();
-    if (status.totalSources === 0) {
+// 列出镜像
+async function handleListImages(client, args) {
+    const dockerHost = args.docker_host;
+    const result = await client.listImages(dockerHost);
+    if (!result.success) {
         return {
             status: 'error',
-            message: '❌ 未配置任何 Docker 源',
-            setup_guide: `
-═══════════════════════════════════════════════════════════════
-🔧 配置 Docker 连接（推荐使用会话配置）：
-
-【方式1】会话配置（推荐，无需修改文件）
-  直接对话: "连接 tcp://您的服务器IP:2375"
-
-【方式2】远程 Docker（云服务器）
-  DOCKER_HOST=tcp://您的服务器IP:2375
-
-【方式3】本地 Docker（开发环境）
-  ALLOW_LOCAL_DOCKER=true
-
-【方式4】双源模式
-  DOCKER_HOST=tcp://您的服务器IP:2375
-  ALLOW_LOCAL_DOCKER=true
-═══════════════════════════════════════════════════════════════
-      `.trim(),
+            message: result.error,
+            hint: '请传入 docker_host 参数，例如: {"docker_host": "tcp://192.168.1.100:2375"}',
         };
     }
     return {
-        status: status.connectedSources > 0 ? 'success' : 'error',
-        message: status.connectedSources > 0
-            ? `✅ ${status.connectedSources}/${status.totalSources} 个源连接成功`
-            : '❌ 所有源连接失败',
-        total_sources: status.totalSources,
-        connected_sources: status.connectedSources,
-        sources: status.sources.map(s => ({
-            name: s.name,
-            type: s.type === 'local' ? '💻 本地' : '☁️ 云端',
-            host: s.host,
-            status: s.status === 'connected' ? '✅ 已连接' : '❌ 未连接',
-            error: s.error,
-        })),
+        status: 'success',
+        host: result.host,
+        count: result.data?.length || 0,
+        images: result.data,
     };
 }
-// ========== 工具路由映射 ==========
+// 镜像详情
+async function handleImageInfo(client, args) {
+    const dockerHost = args.docker_host;
+    const imageId = args.image_id;
+    if (!imageId) {
+        return { status: 'error', message: '请提供 image_id 参数' };
+    }
+    const result = await client.inspectImage(imageId, dockerHost);
+    if (!result.success) {
+        return { status: 'error', message: result.error, host: result.host };
+    }
+    return {
+        status: 'success',
+        host: result.host,
+        image: result.data,
+    };
+}
+// 连接状态
+async function handleConnectionStatus(client, args) {
+    const dockerHost = args.docker_host;
+    const result = await client.getConnectionStatus(dockerHost);
+    if (!result.success) {
+        return {
+            status: 'error',
+            message: result.error,
+            hint: '请传入 docker_host 参数测试连接，例如: {"docker_host": "tcp://192.168.1.100:2375"}',
+        };
+    }
+    return {
+        status: 'success',
+        message: '✅ Docker 连接正常',
+        host: result.host,
+        connected: result.data?.connected,
+    };
+}
+/**
+ * 工具处理器映射
+ */
 export const MULTI_TOOL_MAP = {
-    docker_list_containers: multiDockerListContainers,
-    docker_inspect: multiDockerInspect,
-    docker_logs: multiDockerLogs,
-    docker_stats: multiDockerStats,
-    docker_list_images: multiDockerListImages,
-    docker_image_info: multiDockerImageInfo,
-    docker_connection_status: multiDockerConnectionStatus,
+    docker_list_containers: handleListContainers,
+    docker_inspect: handleInspect,
+    docker_logs: handleLogs,
+    docker_stats: handleStats,
+    docker_list_images: handleListImages,
+    docker_image_info: handleImageInfo,
+    docker_connection_status: handleConnectionStatus,
 };
 //# sourceMappingURL=multi-source-tools.js.map

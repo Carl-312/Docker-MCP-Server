@@ -1,7 +1,7 @@
 /**
- * 会话配置工具
+ * 会话配置工具（简化版）
  *
- * 允许用户在对话中动态设置 Docker 连接配置
+ * 只支持远程 Docker 连接配置
  */
 /**
  * 设置 Docker 连接工具定义
@@ -13,10 +13,6 @@ export declare const SET_CONNECTION_TOOL: {
         type: "object";
         properties: {
             docker_host: {
-                type: string;
-                description: string;
-            };
-            allow_local: {
                 type: string;
                 description: string;
             };
@@ -35,7 +31,7 @@ export declare const SET_CONNECTION_TOOL: {
                 description: string;
             };
         };
-        required: never[];
+        required: string[];
     };
 };
 /**
@@ -83,6 +79,33 @@ export declare function handleResetConfig(_client: unknown, args: unknown): Prom
  * 会话配置工具列表
  */
 export declare const SESSION_CONFIG_TOOLS: ({
+    name: string;
+    description: string;
+    inputSchema: {
+        type: "object";
+        properties: {
+            docker_host: {
+                type: string;
+                description: string;
+            };
+            security_mode: {
+                type: string;
+                enum: string[];
+                description: string;
+            };
+            audit_log: {
+                type: string;
+                description: string;
+            };
+            log_level: {
+                type: string;
+                enum: string[];
+                description: string;
+            };
+        };
+        required: string[];
+    };
+} | {
     name: string;
     description: string;
     inputSchema: {
