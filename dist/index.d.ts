@@ -8,6 +8,7 @@
  * 特点：
  * - 每个工具都支持 docker_host 参数，无需预先配置
  * - 也可通过 DOCKER_HOST 环境变量设置默认连接
+ * - 同时支持 SSE 和 Streamable HTTP 传输模式
  */
 export {};
 //# sourceMappingURL=index.d.ts.map

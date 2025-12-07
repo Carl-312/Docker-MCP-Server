@@ -1,0 +1,79 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/npm/@anthropic-ai/mcp-registry-schema/schema.json",
+  "name": "io.github.carl-312/docker-mcp-server",
+  "description": "云巡 Docker MCP Server - 企业级安全的 Docker 容器管理工具，支持远程容器监控、镜像管理、日志查看，具备四层纵深防御安全架构",
+  "version": "1.0.7",
+  "vendor": {
+    "name": "Carl-312",
+    "url": "https://github.com/Carl-312"
+  },
+  "sourceUrl": "https://github.com/Carl-312/Docker-MCP-Server",
+  "homepage": "https://github.com/Carl-312/Docker-MCP-Server#readme",
+  "license": "MIT",
+  "categories": [
+    "DevOps",
+    "Docker",
+    "Container Management",
+    "Infrastructure"
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "docker-mcp-secure",
+      "version": "1.0.7",
+      "transport": {
+        "type": "stdio"
+      },
+      "command": "npx",
+      "args": ["-y", "docker-mcp-secure"]
+    }
+  ],
+  "tools": [
+    {
+      "name": "docker_list_containers",
+      "description": "列出云服务器上的所有 Docker 容器"
+    },
+    {
+      "name": "docker_inspect",
+      "description": "查看指定容器的详细信息"
+    },
+    {
+      "name": "docker_logs",
+      "description": "获取容器的最近日志"
+    },
+    {
+      "name": "docker_stats",
+      "description": "获取容器的资源使用情况（CPU、内存、网络等）"
+    },
+    {
+      "name": "docker_list_images",
+      "description": "列出云服务器上的所有 Docker 镜像"
+    },
+    {
+      "name": "docker_image_info",
+      "description": "查看指定镜像的详细信息"
+    },
+    {
+      "name": "docker_connection_status",
+      "description": "测试 Docker 连接是否正常"
+    },
+    {
+      "name": "docker_set_connection",
+      "description": "设置 Docker 连接"
+    },
+    {
+      "name": "docker_get_session_config",
+      "description": "获取当前会话的 Docker 配置状态"
+    },
+    {
+      "name": "docker_reset_config",
+      "description": "重置 Docker 配置为环境变量默认值"
+    },
+    {
+      "name": "docker_generate_config",
+      "description": "生成 Docker MCP 配置 JSON"
+    }
+  ]
+}
+
+

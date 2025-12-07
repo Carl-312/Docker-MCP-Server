@@ -8,10 +8,12 @@
  * 特点：
  * - 每个工具都支持 docker_host 参数，无需预先配置
  * - 也可通过 DOCKER_HOST 环境变量设置默认连接
+ * - 同时支持 SSE 和 Streamable HTTP 传输模式
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError, } from '@modelcontextprotocol/sdk/types.js';
 import { randomUUID } from 'node:crypto';
@@ -167,32 +169,106 @@ async function main() {
 }
 /**
  * 启动 HTTP 服务器
+ * 同时支持 SSE 和 Streamable HTTP 两种传输模式
  */
 async function startHttpServer(port, host) {
     const app = createMcpExpressApp({ host });
-    const transports = new Map();
+    // Streamable HTTP 传输存储
+    const streamableTransports = new Map();
+    // SSE 传输存储
+    const sseTransports = new Map();
+    // ===== Streamable HTTP 端点 (新标准) =====
     app.all('/mcp', async (req, res) => {
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
-                transports.set(sessionId, transport);
-                console.error(`📡 新会话: ${sessionId}`);
+                streamableTransports.set(sessionId, transport);
+                console.error(`📡 [Streamable] 新会话: ${sessionId}`);
             },
             onsessionclosed: (sessionId) => {
-                transports.delete(sessionId);
-                console.error(`📡 会话关闭: ${sessionId}`);
+                streamableTransports.delete(sessionId);
+                console.error(`📡 [Streamable] 会话关闭: ${sessionId}`);
             },
         });
         await server.connect(transport);
         await transport.handleRequest(req, res);
     });
+    // ===== SSE 端点 (兼容旧客户端/百宝箱) =====
+    app.get('/sse', async (req, res) => {
+        console.error('📡 [SSE] 收到 SSE 连接请求');
+        // 验证 API Key（如果设置了）
+        const apiKey = req.query.key || req.headers['x-api-key'];
+        const requiredKey = process.env.API_KEY;
+        if (requiredKey && apiKey !== requiredKey) {
+            res.status(401).json({ error: 'Unauthorized: Invalid API Key' });
+            return;
+        }
+        const transport = new SSEServerTransport('/messages', res);
+        const sessionId = transport.sessionId;
+        sseTransports.set(sessionId, transport);
+        console.error(`📡 [SSE] 新会话: ${sessionId}`);
+        res.on('close', () => {
+            sseTransports.delete(sessionId);
+            console.error(`📡 [SSE] 会话关闭: ${sessionId}`);
+        });
+        await server.connect(transport);
+    });
+    // SSE 消息处理端点
+    app.post('/messages', async (req, res) => {
+        const sessionId = req.query.sessionId;
+        const transport = sseTransports.get(sessionId);
+        if (transport) {
+            await transport.handlePostMessage(req, res);
+        }
+        else {
+            res.status(400).json({ error: 'No transport found for sessionId' });
+        }
+    });
+    // ===== 兼容百宝箱的端点别名 =====
+    app.get('/mcp-servers', async (req, res) => {
+        console.error('📡 [SSE] 收到百宝箱 SSE 连接请求');
+        // 验证 API Key
+        const apiKey = req.query.key || req.headers['x-api-key'];
+        const requiredKey = process.env.API_KEY;
+        if (requiredKey && apiKey !== requiredKey) {
+            res.status(401).json({ error: 'Unauthorized: Invalid API Key' });
+            return;
+        }
+        const transport = new SSEServerTransport('/mcp-messages', res);
+        const sessionId = transport.sessionId;
+        sseTransports.set(sessionId, transport);
+        console.error(`📡 [百宝箱] 新会话: ${sessionId}`);
+        res.on('close', () => {
+            sseTransports.delete(sessionId);
+            console.error(`📡 [百宝箱] 会话关闭: ${sessionId}`);
+        });
+        await server.connect(transport);
+    });
+    app.post('/mcp-messages', async (req, res) => {
+        const sessionId = req.query.sessionId;
+        const transport = sseTransports.get(sessionId);
+        if (transport) {
+            await transport.handlePostMessage(req, res);
+        }
+        else {
+            res.status(400).json({ error: 'No transport found for sessionId' });
+        }
+    });
+    // ===== 辅助端点 =====
     app.get('/health', (_req, res) => {
         res.json({
             status: 'ok',
             name: 'docker-mcp-server',
-            version: '1.0.6',
+            version: '1.0.7',
             tools: MULTI_TOOLS.length,
             docker_host: process.env.DOCKER_HOST || 'not configured (pass docker_host in each call)',
+            endpoints: {
+                streamableHttp: '/mcp',
+                sse: '/sse',
+                sseMessages: '/messages',
+                baibaobox: '/mcp-servers',
+                baibaoboxMessages: '/mcp-messages',
+            },
         });
     });
     app.get('/tools', (_req, res) => {
@@ -207,7 +283,9 @@ async function startHttpServer(port, host) {
         const httpServer = app.listen(port, host, () => {
             console.error(`✅ MCP Server 已启动 (HTTP 模式)`);
             console.error(`   🌐 地址: http://${host}:${port}`);
-            console.error(`   📡 MCP 端点: http://${host}:${port}/mcp`);
+            console.error(`   📡 Streamable HTTP: http://${host}:${port}/mcp`);
+            console.error(`   📡 SSE 端点: http://${host}:${port}/sse`);
+            console.error(`   📡 百宝箱端点: http://${host}:${port}/mcp-servers`);
         });
         httpServer.on('error', (err) => {
             console.error('❌ HTTP 服务器错误:', err);
